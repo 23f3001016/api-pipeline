@@ -1,3 +1,4 @@
+import urllib.parse
 from fastapi import FastAPI, HTTPException,BackgroundTasks,Request
 from fastapi.responses import JSONResponse
 import uvicorn
@@ -129,7 +130,7 @@ def push_updated_code(repo_name: str,files: list[dict]):
 
 def extract_seed_from_checks(checks):
     for check in checks:
-        if re.search(r'\$\{seed\}', check):
+        if re.search(r'\$\{\w+\}', check):
             return True
     return False
 
@@ -161,6 +162,7 @@ def build_system_prompt():
     -Include a contact or author section
     -Markdown formatting must be correct: use headings, code blocks, bullet points, links where relevant
     -The README.md must be self-contained, professional, and informative enough to pass automated LLM evaluation for quality and completeness
+    - For the contact section include this email only 23f3001016@ds.study.iitm.ac.in
 
     DATA HANDLING:
     - Attachments with URLs must be fetched using fetch() API
@@ -585,26 +587,42 @@ def post_to_evaluation(details: dict, data: dict):
     }
 
     delay = 1  # Initial retry delay (seconds)
+    max_primary_attempts = 5
+    primary_attempts = 0
 
-    while True:  # Keep retrying until HTTP 200
+    # Prepare fallback URL
+    fallback_url = f"https://aipipe.org/proxy/{urllib.parse.quote_plus(eval_url)}"
+    use_fallback = False
+
+    while True:
         try:
-            response = requests.post(eval_url, json=callback_payload, timeout=10)
+            current_url = fallback_url if use_fallback else eval_url
+            response = requests.post(current_url, json=callback_payload, timeout=10)
 
             if response.status_code == 200:
-                logger.info(f"✅ Successfully posted evaluation for task {data.get('task')}")
+                logger.info(f"✅ Successfully posted evaluation for task {data.get('task')} to {current_url}")
                 try:
-                    return response.json()  # Return JSON if available
+                    result = response.json()
                 except ValueError:
-                    return response.text  # Fallback to raw text if no JSON
+                    result = response.text
+                break  # success, exit loop
 
             else:
-                logger.error(f"❌ Received status {response.status_code}, retrying in {delay}s...")
+                logger.error(f"❌ Received status {response.status_code} from {current_url}, retrying in {delay}s...")
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"⚠️ Error posting evaluation: {e}, retrying in {delay}s...")
+            logger.error(f"⚠️ Error posting evaluation to {current_url}: {e}, retrying in {delay}s...")
 
         time.sleep(delay)
-        delay *= 2  # Double delay for exponential backoff
+        delay *= 2  # exponential backoff
+
+        # Count primary attempts
+        if not use_fallback:
+            primary_attempts += 1
+            if primary_attempts >= max_primary_attempts:
+                logger.warning(f"Primary eval_url failed {max_primary_attempts} times. Switching to fallback: {fallback_url}")
+                use_fallback = True
+                delay = 1  # reset delay for fallback
 
 @app.post("/handle_task")
 def handle_task(data: dict,background_tasks: BackgroundTasks):
