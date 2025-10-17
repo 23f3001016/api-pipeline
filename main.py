@@ -12,10 +12,6 @@ from openai import OpenAI
 logging.basicConfig(
     level=logging.INFO,  # DEBUG for more detail
     format='%(asctime)s [%(levelname)s] %(message)s'
-    # handlers=[
-    #     logging.StreamHandler(),  # Console
-    #     logging.FileHandler("pipeline.log")  # Save to file
-    # ]
 )
 
 logger = logging.getLogger(__name__)
@@ -93,20 +89,17 @@ def push_code(repo_name: str,files: list[dict]):
             json=payload
         )
         if response.status_code not in [200,201]:
-            raise Exception(f"Failed to push {file_name}: {response.json()}")    
+            raise Exception(f"Failed to push {file_name}: {response.json()}") 
+        logger.info("Pushed files to Github successfully")
 
 def push_updated_code(repo_name: str,files: list[dict]):
-    """Pushes updated code into an already existing repository from round 1
-    
-    Keyword arguments:
-    argument -- nope
-    Return: none
+    """ Pushes updated code into an already existing repository from round 1
     """
     #Get sha of latest commit
     logger.info(f"Pushing updated code to repo: {repo_name}")
     headers={
         "Authorization":f"Bearer {GITHUB_TOKEN}",
-        "Accept":"application/vnd.github+json" 
+        "Accept": "application/vnd.github+json" 
     }
     for file in files:
         file_name=file.get("name")
@@ -141,7 +134,7 @@ def extract_seed_from_checks(checks):
     return False
 
 def build_system_prompt():
-    return """You are an expert full-stack developer creating production-ready static web applications.
+    return """"You are an expert full-stack developer creating production-ready static web applications.
 
     OUTPUT FORMAT:
     Return ONLY a valid JSON array. Each element must have exactly two keys:
@@ -156,17 +149,40 @@ def build_system_prompt():
     5. Default to a SINGLE HTML file with all CSS and JavaScript inline unless the task explicitly requires multiple files
     6. Only create separate JS/CSS files if the task specifically mentions them or if code is extremely large
 
+    CRITICAL REQUIREMENTS FOR README.MD:
+    -Generate a COMPLETE, HIGH-QUALITY README.md - no placeholders, no TODOs, no generic filler
+    -Include a project title, concise description, and purpose
+    -Include setup instructions that work for a beginner, including prerequisites, installation, and running the project locally
+    -Include usage instructions, preferably with examples or screenshots (can be referenced as placeholders if images not provided)
+    -Include a features section listing key functionalities or highlights of the project
+    -Include a technologies/stack section clearly specifying HTML, CSS, JavaScript (or other relevant tech)
+    -Include a license section or note if open-source
+    -Include a contributing section describing how others can contribute (if applicable)
+    -Include a contact or author section
+    -Markdown formatting must be correct: use headings, code blocks, bullet points, links where relevant
+    -The README.md must be self-contained, professional, and informative enough to pass automated LLM evaluation for quality and completeness
+
     DATA HANDLING:
     - Attachments with URLs must be fetched using fetch() API
     - For CSV: parse with native JavaScript (split by newlines and commas) or include Papa Parse from CDN
     - Perform ALL calculations client-side in the browser
     - Handle both regular URLs and data URIs correctly
 
+    TEMPLATE VARIABLES:
+    - Variables like ${seed}, ${result}, etc. are replaced with actual values BEFORE the page loads.
+    - These appear in:
+      * Attachment URLs: data:text/csv;base64,${seed} → will become actual base64 data
+      * Title checks: "Sales Summary ${seed}" → will contain the actual seed value
+      * Calculation checks: Math.abs(value - ${result}) → will be a numeric value
+    - These placeholders may appear inside URLs, titles, or numeric expressions.
+    - Your code must NOT try to read or access ${...} directly.
+    - By the time your code runs, they already contain final runtime values.
+    - Always assume resolved data (e.g., actual URLs or numbers)
+
     EVALUATION CHECKS:
     - The checks array contains JavaScript expressions that will be executed to verify your implementation
     - Each check MUST pass - analyze them carefully and ensure your code satisfies every condition
     - Checks run immediately after page load - do NOT use setTimeout or delays
-    - If checks reference ${seed} or ${result}, these are template variables - your code must make them true
 
     DOM REQUIREMENTS:
     - If checks reference specific element IDs or selectors, create those exact elements
@@ -286,7 +302,7 @@ def build_user_prompt_with_context(payload):
     {attachment_details}
     {checks_detail}
     {seed_note}
-    {file_context}
+    file context: {file_context}
 
     DELIVERABLES:
     1. index.html - single HTML file with inline CSS and JavaScript (unless task requires multiple files)
@@ -334,8 +350,8 @@ def validate_files(files):
     
     missing = required_files - file_names
     if missing:
-        print(f"Warning: Missing recommended files: {missing}")
-    
+        logger.info(f"Missing recommended files: {missing}")
+
     has_html = any(f['name'].endswith('.html') for f in files)
     if not has_html:
         raise ValueError("No HTML file found in generated files")
@@ -397,36 +413,36 @@ def code_llm(payload: dict):
     )
 
     raw_content = (response.choices[0].message.content or "").strip()
+
+    logger.info("Recevied response from LLM")
     
     if not raw_content:
         raise ValueError("LLM returned empty response")
-    
-    print(f"Received response ({len(raw_content)} chars)")
     
     json_content = extract_json_from_response(raw_content)
     
     try:
         data = json.loads(json_content)
-        print("Successfully parsed JSON response")
+        logger.info("Successfully parsed JSON response")
     except json.JSONDecodeError as e:
-        print(f"Failed to parse JSON: {e}")
-        print(f"First 500 chars of attempted parse: {json_content[:500]}")
+        logger.info(f"Failed to parse JSON: {e}")
+        logger.info(f"First 500 chars of attempted parse: {json_content[:500]}")
         raise ValueError(f"Invalid JSON from LLM: {e}")
     
     if isinstance(data, dict):
         if "files" in data:
             files = data["files"]
-            print("Extracted files from 'files' key")
+            logger.info("Extracted files from 'files' key")
         else:
             possible_arrays = [v for v in data.values() if isinstance(v, list)]
             if possible_arrays:
                 files = possible_arrays[0]
-                print("Extracted files from dict value")
+                logger.info("Extracted files from dict value")
             else:
                 raise ValueError("Response is a dict but contains no file array")
     elif isinstance(data, list):
         files = data
-        print("Response is a direct array")
+        logger.info("Response is a direct array")
     else:
         raise ValueError(f"Unexpected response type: {type(data)}")
     
@@ -435,12 +451,12 @@ def code_llm(payload: dict):
         if isinstance(f, dict) and "name" in f and "content" in f:
             result.append({"name": f["name"], "content": f["content"]})
         else:
-            print(f"Skipping invalid file object: {f}")
+            logger.info(f"Skipping invalid file object: {f}")
     
     if not result:
         raise ValueError("No valid file objects found in response")
-    
-    print(f"Extracted {len(result)} valid files")
+
+    logger.info(f"Extracted {len(result)} valid files")
     
     validate_files(result)
     
@@ -464,36 +480,36 @@ def modify_code_llm(payload:dict):
     )
 
     raw_content = (response.choices[0].message.content or "").strip()
-    
+
     if not raw_content:
         raise ValueError("LLM returned empty response")
-    
-    print(f"Received response ({len(raw_content)} chars)")
+
+    logger.info(f"Received response ({len(raw_content)} chars)")
     
     json_content = extract_json_from_response(raw_content)
     
     try:
         data = json.loads(json_content)
-        print("Successfully parsed JSON response")
+        logger.info("Successfully parsed JSON response")
     except json.JSONDecodeError as e:
-        print(f"Failed to parse JSON: {e}")
-        print(f"First 500 chars of attempted parse: {json_content[:500]}")
+        logger.error(f"Failed to parse JSON: {e}")
+        logger.error(f"First 500 chars of attempted parse: {json_content[:500]}")
         raise ValueError(f"Invalid JSON from LLM: {e}")
     
     if isinstance(data, dict):
         if "files" in data:
             files = data["files"]
-            print("Extracted files from 'files' key")
+            logger.info("Extracted files from 'files' key")
         else:
             possible_arrays = [v for v in data.values() if isinstance(v, list)]
             if possible_arrays:
                 files = possible_arrays[0]
-                print("Extracted files from dict value")
+                logger.info("Extracted files from dict value")
             else:
                 raise ValueError("Response is a dict but contains no file array")
     elif isinstance(data, list):
         files = data
-        print("Response is a direct array")
+        logger.info("Response is a direct array")
     else:
         raise ValueError(f"Unexpected response type: {type(data)}")
     
@@ -502,12 +518,12 @@ def modify_code_llm(payload:dict):
         if isinstance(f, dict) and "name" in f and "content" in f:
             result.append({"name": f["name"], "content": f["content"]})
         else:
-            print(f"Skipping invalid file object: {f}")
+            logger.info(f"Skipping invalid file object: {f}")
     
     if not result:
         raise ValueError("No valid file objects found in response")
-    
-    print(f"Extracted {len(result)} valid files")
+
+    logger.info(f"Extracted {len(result)} valid files")
     
     validate_files(result)
     
@@ -547,34 +563,48 @@ def process_task(data: dict):
     # After round logic, POST results
     post_to_evaluation(details, data)
 
+import time
+import requests
+
 def post_to_evaluation(details: dict, data: dict):
     eval_url = data.get("evaluation_url")
-    if eval_url:
-        repo_name=details.get("repo_name")
-        commit_sha=details.get("commit_sha")
-        callback_payload = {
-            "email": data.get("email"),
-            "task": data.get("task"),
-            "round": data.get("round"),
-            "nonce": data.get("nonce"),
-            "repo_url": f"https://github.com/23f3001016/{repo_name}",
-            "commit_sha": commit_sha,
-            "pages_url": f"https://23f3001016.github.io/{repo_name}/"
-        }
+    if not eval_url:
+        logger.warning("No evaluation_url provided in data.")
+        return None
+
+    repo_name = details.get("repo_name")
+    commit_sha = details.get("commit_sha")
+    callback_payload = {
+        "email": data.get("email"),
+        "task": data.get("task"),
+        "round": data.get("round"),
+        "nonce": data.get("nonce"),
+        "repo_url": f"https://github.com/23f3001016/{repo_name}",
+        "commit_sha": commit_sha,
+        "pages_url": f"https://23f3001016.github.io/{repo_name}/"
+    }
+
+    delay = 1  # Initial retry delay (seconds)
+
+    while True:  # Keep retrying until HTTP 200
         try:
             response = requests.post(eval_url, json=callback_payload, timeout=10)
-            response.raise_for_status()
-            logger.info(f"Successfully posted evaluation for task {data.get('task')}")
-            return response.json()  # if the API returns JSON
-        except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error while posting evaluation: {e} - Response: {e.response.text}")
+
+            if response.status_code == 200:
+                logger.info(f"✅ Successfully posted evaluation for task {data.get('task')}")
+                try:
+                    return response.json()  # Return JSON if available
+                except ValueError:
+                    return response.text  # Fallback to raw text if no JSON
+
+            else:
+                logger.error(f"❌ Received status {response.status_code}, retrying in {delay}s...")
+
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error while posting evaluation: {e}")
-        except Exception as e:
-            logger.exception(f"Unexpected error while posting evaluation: {e}")
-    else:
-        logger.warning("No evaluation_url provided in data.")
-    return None
+            logger.error(f"⚠️ Error posting evaluation: {e}, retrying in {delay}s...")
+
+        time.sleep(delay)
+        delay *= 2  # Double delay for exponential backoff
 
 @app.post("/handle_task")
 def handle_task(data: dict,background_tasks: BackgroundTasks):
@@ -591,6 +621,15 @@ def handle_task(data: dict,background_tasks: BackgroundTasks):
             },
             status_code=200
         )
+
+@app.get("/")
+def root():
+    """Root endpoint"""
+    return {
+        "message": "Server is running!",
+        "endpoint": "/handle_task",
+        "method": "POST"
+    }
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
